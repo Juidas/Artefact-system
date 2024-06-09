@@ -35,7 +35,7 @@ class AdminRole(Role):
         return True
 
 class UserRole(Role):
-    """User role with permissions to manage their own artefacts."""
+    """User role with limited permissions."""
     def __init__(self):
         super().__init__('user')
 
@@ -45,27 +45,19 @@ class UserRole(Role):
     def can_read(self):
         return True
 
-    def can_update(self, artefact, user):
-        return artefact['created_by'] == user
-
-    def can_delete(self, artefact, user):
-        return artefact['created_by'] == user
+    def can_update(self):
+        return True  # User can update their own artefacts
+    def can_delete(self):
+        return True  # User can delete their own artefacts
 
 def get_role(role_name):
-    """
-    Get the role instance based on role name.
-
-    Args:
-        role_name (str): The name of the role.
-
-    Returns:
-        Role: The role instance.
-    """
-    roles = {
-        'admin': AdminRole(),
-        'user': UserRole()
-    }
-    return roles.get(role_name, Role(role_name))
+    """Get the role instance based on role name."""
+    if role_name == 'admin':
+        return AdminRole()
+    elif role_name == 'user':
+        return UserRole()
+    else:
+        raise ValueError("Invalid role: %s" % role_name)
 
 # Example usage
 if __name__ == "__main__":

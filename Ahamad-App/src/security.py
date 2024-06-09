@@ -1,9 +1,10 @@
-"""Module for security functions."""
+from cryptography.fernet import Fernet
 
-def encrypt(data, key):
-    """Encrypt the data with the given key."""
-    raise NotImplementedError("This method is not implemented yet")
+# Generate the encryption key
+encryption_key = Fernet.generate_key()
 
-def decrypt(data, key):
-    """Decrypt the data with the given key."""
-    raise NotImplementedError("This method is not implemented yet")
+# Save the encryption key to a file
+with open('secret.key', 'wb') as key_file:
+    key_file.write(encryption_key)
+
+print("Encryption key generated and saved to 'secret.key'")

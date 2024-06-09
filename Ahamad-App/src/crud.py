@@ -7,6 +7,7 @@ from datetime import datetime
 from tinydb import TinyDB, Query
 from cryptography.fernet import Fernet
 from PIL import Image
+from roles import get_role, Role  # Import the role management module
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', filename='app.log')
@@ -20,7 +21,8 @@ THUMBNAIL_PATH = os.path.join(DATA_PATH, 'thumbnails')
 lyrics_db = TinyDB(os.path.join(DATA_PATH, 'lyrics.json'))
 
 # Encryption key (in a real application, store this securely)
-encryption_key = Fernet.generate_key()
+with open('secret.key', 'rb') as key_file:
+    encryption_key = key_file.read()
 cipher_suite = Fernet(encryption_key)
 
 def validate_input(input_str):
@@ -40,6 +42,26 @@ def validate_input(input_str):
         logger.error("Invalid input detected")
         raise ValueError("Invalid input")
     return input_str
+
+def validate_role(role):
+    """
+    Validate role to ensure it is either 'admin' or 'user'.
+
+    Args:
+        role (str): The role to validate.
+
+    Returns:
+        Role: The role instance.
+
+    Raises:
+        ValueError: If the role is invalid.
+    """
+    try:
+        role_instance = get_role(role)
+    except ValueError as e:
+        logger.error("Invalid role detected: %s", role)
+        raise ValueError("Invalid role: %s" % role) from e
+    return role_instance
 
 def calculate_checksum(data):
     """
@@ -81,7 +103,7 @@ def decrypt(data):
     encrypted_data = base64.urlsafe_b64decode(data.encode('utf-8'))
     return cipher_suite.decrypt(encrypted_data).decode('utf-8')
 
-def create_artefact(db, artefact, user):
+def create_artefact(db, artefact, user, role):
     """
     Create a new artefact in the database.
 
@@ -89,10 +111,16 @@ def create_artefact(db, artefact, user):
         db (TinyDB): The database to insert the artefact into.
         artefact (dict): The artefact data.
         user (str): The user creating the artefact.
+        role (str): The role of the user.
 
     Returns:
         int: The ID of the created artefact.
     """
+    role_instance = validate_role(role)
+    if not role_instance.can_create():
+        logger.error("User %s with role %s is not authorized to create artefacts", user, role)
+        raise PermissionError("User not authorized to create artefacts")
+
     try:
         artefact['title'] = validate_input(artefact['title'])
         artefact['content'] = validate_input(artefact['content'])
@@ -109,27 +137,39 @@ def create_artefact(db, artefact, user):
         logger.error("Failed to create artefact: %s", str(e))
         raise ValueError("Failed to create artefact: %s" % str(e)) from e
 
-def read_artefacts(db):
+def read_artefacts(db, user, role):
     """
     Read all artefacts from the database.
 
     Args:
         db (TinyDB): The database to read from.
+        user (str): The user reading the artefacts.
+        role (str): The role of the user.
 
     Returns:
         list: A list of artefacts.
     """
+    role_instance = validate_role(role)
+    if not role_instance.can_read():
+        logger.error("User %s with role %s is not authorized to read artefacts", user, role)
+        raise PermissionError("User not authorized to read artefacts")
+
     try:
         artefacts = db.all()
+        logger.info("Retrieved %d artefacts from the database", len(artefacts))
         for artefact in artefacts:
-            artefact['content'] = decrypt(artefact['content'])
-        logger.info("Read %d artefacts", len(artefacts))
+            try:
+                artefact['content'] = decrypt(artefact['content'])
+                logger.info("Decrypted artefact with ID: %d", artefact['id'])
+            except Exception as e:
+                logger.error("Decryption failed for artefact with ID: %d. Error: %s", artefact['id'], str(e))
+                raise Exception("Decryption error: %s" % str(e)) from e
         return artefacts
     except Exception as e:
         logger.error("Failed to read artefacts: %s", str(e))
         raise Exception("Failed to read artefacts: %s" % str(e)) from e
 
-def update_artefact(db, artefact_id, updated_artefact, user):
+def update_artefact(db, artefact_id, updated_artefact, user, role):
     """
     Update an artefact in the database.
 
@@ -138,16 +178,18 @@ def update_artefact(db, artefact_id, updated_artefact, user):
         artefact_id (int): The ID of the artefact to update.
         updated_artefact (dict): The updated artefact data.
         user (str): The user updating the artefact.
+        role (str): The role of the user updating the artefact.
 
     Raises:
         PermissionError: If the user is not authorized to update the artefact.
     """
-    try:
-        artefact = db.get(Query().id == artefact_id)
-        if artefact['created_by'] != user:
-            logger.error("User %s is not authorized to update artefact %d", user, artefact_id)
-            raise PermissionError("User not authorized to update this artefact")
+    role_instance = validate_role(role)
+    artefact = db.get(Query().id == artefact_id)
+    if artefact['created_by'] != user and role != 'admin':
+        logger.error("User %s is not authorized to update artefact %d", user, artefact_id)
+        raise PermissionError("User not authorized to update this artefact")
 
+    try:
         updated_artefact['title'] = validate_input(updated_artefact['title'])
         updated_artefact['content'] = validate_input(updated_artefact['content'])
         updated_artefact['content'] = encrypt(updated_artefact['content'])
@@ -159,7 +201,7 @@ def update_artefact(db, artefact_id, updated_artefact, user):
         logger.error("Failed to update artefact: %s", str(e))
         raise ValueError("Failed to update artefact: %s" % str(e)) from e
 
-def delete_artefact(db, artefact_id, user):
+def delete_artefact(db, artefact_id, user, role):
     """
     Delete an artefact from the database.
 
@@ -167,16 +209,18 @@ def delete_artefact(db, artefact_id, user):
         db (TinyDB): The database to delete from.
         artefact_id (int): The ID of the artefact to delete.
         user (str): The user deleting the artefact.
+        role (str): The role of the user.
 
     Raises:
         PermissionError: If the user is not authorized to delete the artefact.
     """
-    try:
-        artefact = db.get(Query().id == artefact_id)
-        if artefact['created_by'] != user and user != 'admin':
-            logger.error("User %s is not authorized to delete artefact %d", user, artefact_id)
-            raise PermissionError("User not authorized to delete this artefact")
+    role_instance = validate_role(role)
+    artefact = db.get(Query().id == artefact_id)
+    if artefact['created_by'] != user and role != 'admin':
+        logger.error("User %s with role %s is not authorized to delete artefact %d", user, role, artefact_id)
+        raise PermissionError("User not authorized to delete this artefact")
 
+    try:
         db.remove(Query().id == artefact_id)
         logger.info("Artefact with ID %d deleted by user: %s", artefact_id, user)
     except Exception as e:
@@ -208,7 +252,7 @@ def save_thumbnail(image_path, category, artefact_id):
         logger.error("Failed to save thumbnail: %s", str(e))
         raise Exception("Failed to save thumbnail: %s" % str(e)) from e
 
-def create_artefact_with_thumbnail(db, artefact, image_path, category, user):
+def create_artefact_with_thumbnail(db, artefact, image_path, category, user, role):
     """
     Create an artefact with an associated thumbnail.
 
@@ -218,12 +262,13 @@ def create_artefact_with_thumbnail(db, artefact, image_path, category, user):
         image_path (str): The path to the image file.
         category (str): The category of the artefact.
         user (str): The user creating the artefact.
+        role (str): The role of the user.
 
     Returns:
         int: The ID of the created artefact.
     """
     try:
-        artefact_id = create_artefact(db, artefact, user)
+        artefact_id = create_artefact(db, artefact, user, role)
         if artefact_id is not None:
             save_thumbnail(image_path, category, artefact_id)
             logger.info("Artefact with ID %d created with thumbnail by user: %s", artefact_id, user)
